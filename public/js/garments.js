@@ -1,92 +1,48 @@
-// Garment meshes — a procedurally-generated anatomical dress form.
+// Garment models — generated procedurally with proper tailored shapes, no
+// mannequin underneath. Think of it as retail product photography: the
+// trouser hangs in space with gravity-weighted silhouette; the jacket sits
+// with shoulders broad, lapels open, a faint suggestion of the invisible
+// wearer giving it shape.
 //
-// Key insight over the earlier lathe version: real human torsos are NOT
-// axisymmetric. Shoulders spread much wider than the chest is deep. A
-// tailor's dress form reads wrong if chest/shoulders have the same front-
-// to-back depth as side-to-side width. We fix that by building the torso
-// as a parametric surface with ELLIPTICAL cross-sections — separate
-// width and depth at every height, smoothly interpolated between keyframe
-// profile points.
+// Each garment is a parametric BufferGeometry (or group of them) with
+// anatomically-informed proportions and ELLIPTICAL cross-sections so the
+// fabric wraps with the front-to-back vs side-to-side asymmetry that real
+// tailored garments have.
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
-// --- Mannequin material (non-fabric parts: head, neck, pedestal) -----------
-function makeMannequinMaterial() {
-  return new THREE.MeshPhysicalMaterial({
-    color: 0x1a2638,
-    roughness: 0.5,
-    metalness: 0.0,
-    clearcoat: 0.25,
-    clearcoatRoughness: 0.6,
-  });
-}
+// --- Shared helpers --------------------------------------------------------
 
-// --- Torso profile keyframes ------------------------------------------------
-// [v, width, depth] where:
-//   v     — normalized height, 0 at base to 1 at neck top
-//   width — half-axis on the X axis (side to side)
-//   depth — half-axis on the Z axis (front to back)
-//
-// Width > depth everywhere for a menswear chest. Shoulders spread wider
-// without spreading deeper. Waist pinches on both axes but more on width.
-// First and last entries close the lathe to solid caps at the poles.
-const TORSO_PROFILE = [
-  [0.00, 0.00, 0.00],  // closed bottom pole (solid cap)
-  [0.02, 0.20, 0.14],  // bottom disc edge
-  [0.08, 0.30, 0.20],  // lower hips
-  [0.16, 0.32, 0.21],  // hip widest
-  [0.24, 0.30, 0.20],  // upper hips
-  [0.32, 0.26, 0.19],  // lower waist taper
-  [0.40, 0.23, 0.17],  // waist (narrowest)
-  [0.48, 0.26, 0.19],  // upper waist
-  [0.56, 0.31, 0.22],  // lower chest
-  [0.66, 0.37, 0.24],  // mid chest
-  [0.74, 0.42, 0.25],  // upper chest
-  [0.80, 0.46, 0.24],  // shoulder width peak (widest point overall)
-  [0.84, 0.44, 0.22],  // shoulder top
-  [0.88, 0.34, 0.19],  // shoulder slope toward neck
-  [0.92, 0.20, 0.15],  // upper shoulder taper
-  [0.95, 0.12, 0.11],  // neck base
-  [0.98, 0.095, 0.095],// neck
-  [1.00, 0.00, 0.00],  // closed top pole (solid cap, neck top)
-];
-
-// Interpolate profile with a cosine-smoothed ease so vertical transitions
-// read as organic curves, not piecewise-linear kinks. Returns [width, depth]
-// at a given normalized height `v` in 0..1.
-function profileAt(v) {
-  const p = TORSO_PROFILE;
-  for (let i = 0; i < p.length - 1; i++) {
-    const [v0, w0, d0] = p[i];
-    const [v1, w1, d1] = p[i + 1];
+// Smoothly interpolate [v, width, depth] profile keyframes so cross-sections
+// flow organically between them. Used by every garment.
+function profileAt(profile, v) {
+  for (let i = 0; i < profile.length - 1; i++) {
+    const [v0, w0, d0] = profile[i];
+    const [v1, w1, d1] = profile[i + 1];
     if (v >= v0 && v <= v1) {
       const t = (v1 === v0) ? 0 : (v - v0) / (v1 - v0);
-      const s = t * t * (3 - 2 * t); // smoothstep
+      const s = t * t * (3 - 2 * t);
       return [w0 + (w1 - w0) * s, d0 + (d1 - d0) * s];
     }
   }
-  const last = p[p.length - 1];
+  const last = profile[profile.length - 1];
   return [last[1], last[2]];
 }
 
-// Build the torso as a parametric BufferGeometry. Elliptical cross-sections
-// at every height, smooth interpolation between keyframes, clean UV mapping
-// (u around the body, v up the body) so vertical-warp fabric patterns
-// behave correctly out of the box.
-function buildTorsoGeometry(totalHeight) {
-  const radialSegments = 96;
-  const heightSegments = 140;
-
+// Build a tapered elliptical tube with a profile of [v, w, d] keyframes,
+// revolved around the Y axis. Radial and vertical segment counts are kept
+// high enough for smooth silhouettes on shadow edges. Returns a
+// BufferGeometry oriented with +Y up and the tube's bottom at origin.
+function buildProfileGeometry(profile, totalHeight, radialSegments = 80, heightSegments = 120, open = false) {
   const positions = [];
   const uvs = [];
   const indices = [];
 
   for (let iy = 0; iy <= heightSegments; iy++) {
     const v = iy / heightSegments;
-    const [width, depth] = profileAt(v);
+    const [width, depth] = profileAt(profile, v);
     const y = v * totalHeight;
-
     for (let ix = 0; ix <= radialSegments; ix++) {
       const u = ix / radialSegments;
       const theta = u * Math.PI * 2;
@@ -103,9 +59,7 @@ function buildTorsoGeometry(totalHeight) {
       const b = a + 1;
       const c = a + (radialSegments + 1);
       const d = c + 1;
-      // Two triangles per quad, wound CCW facing outward
-      indices.push(a, c, b);
-      indices.push(b, c, d);
+      indices.push(a, c, b, b, c, d);
     }
   }
 
@@ -117,84 +71,228 @@ function buildTorsoGeometry(totalHeight) {
   return geo;
 }
 
-// --- Build the whole placeholder mannequin ---------------------------------
-export function buildPlaceholderGarment(material) {
+// ==========================================================================
+//  TROUSER
+// ==========================================================================
+// Two tapered legs + a waist/hip yoke. Legs have a slight hang — widest at
+// the thigh, tapering through the knee, with a small cuff flare at the
+// bottom. Menswear cut (narrower at waist than hips, gentle through knee).
+
+const TROUSER_LEG_PROFILE = [
+  [0.00, 0.10, 0.10],  // cuff (ankle)
+  [0.05, 0.105, 0.10], // hem
+  [0.20, 0.105, 0.095],// calf
+  [0.40, 0.11, 0.10],  // knee
+  [0.55, 0.115, 0.105],// thigh (widest below)
+  [0.75, 0.13, 0.115], // upper thigh (widest)
+  [0.90, 0.14, 0.125], // hip
+  [1.00, 0.145, 0.13], // hip attachment
+];
+
+const TROUSER_YOKE_PROFILE = [
+  [0.00, 0.00, 0.00],  // closed bottom (crotch — legs start below)
+  [0.02, 0.10, 0.08],
+  [0.15, 0.23, 0.17],  // hip
+  [0.35, 0.26, 0.18],  // seat (widest hip)
+  [0.60, 0.24, 0.17],  // upper hip
+  [0.82, 0.22, 0.16],  // waist
+  [0.92, 0.22, 0.16],  // waistband bottom
+  [0.98, 0.225, 0.165],// waistband top
+  [1.00, 0.00, 0.00],  // closed top
+];
+
+function buildTrouser(material) {
   const group = new THREE.Group();
 
-  const TORSO_HEIGHT = 1.0;
-  const TORSO_Y = 0.55;
-  const mannequinMat = makeMannequinMaterial();
+  const LEG_LENGTH = 1.1;
+  const YOKE_HEIGHT = 0.45;
 
-  // --- Pedestal ---
-  const baseGeo = new THREE.CylinderGeometry(0.26, 0.30, 0.025, 48);
-  const base = new THREE.Mesh(baseGeo, new THREE.MeshPhysicalMaterial({
-    color: 0x08101e, roughness: 0.15, metalness: 0.2,
-    clearcoat: 0.8, clearcoatRoughness: 0.2,
-  }));
-  base.position.y = 0.013;
-  base.castShadow = true;
-  base.receiveShadow = true;
-  group.add(base);
+  // --- Yoke (waist + hips) ---
+  const yokeGeo = buildProfileGeometry(TROUSER_YOKE_PROFILE, YOKE_HEIGHT, 72, 60);
+  const yoke = new THREE.Mesh(yokeGeo, material);
+  yoke.position.y = LEG_LENGTH - 0.05;
+  yoke.castShadow = true;
+  yoke.receiveShadow = true;
+  group.add(yoke);
 
-  const poleGeo = new THREE.CylinderGeometry(0.022, 0.028, TORSO_Y - 0.02, 20);
-  const pole = new THREE.Mesh(poleGeo, new THREE.MeshPhysicalMaterial({
-    color: 0x1a2330, roughness: 0.25, metalness: 0.55, clearcoat: 0.4,
-  }));
-  pole.position.y = (TORSO_Y - 0.02) / 2 + 0.025;
-  pole.castShadow = true;
-  group.add(pole);
-
-  // --- Torso (fabric) ---
-  const torsoGeo = buildTorsoGeometry(TORSO_HEIGHT);
-  const torso = new THREE.Mesh(torsoGeo, material);
-  torso.position.y = TORSO_Y;
-  torso.castShadow = true;
-  torso.receiveShadow = true;
-  group.add(torso);
-
-  // --- Arms (fabric) ---
-  // Capsule sleeves at the shoulder broadest band. Angled down + slightly
-  // forward so they read as arms-at-rest, not T-pose.
-  const shoulderY = TORSO_Y + 0.82 * TORSO_HEIGHT;
-  const [shoulderW] = profileAt(0.80); // matches the widest-point width
+  // --- Legs ---
+  // Each leg a tapered elliptical tube. Slight outward angle so they
+  // don't look parallel-stiff — gives a hanging-from-belt-loop feel.
   for (const side of [-1, 1]) {
-    const sleeveGeo = new THREE.CapsuleGeometry(0.085, 0.34, 10, 32);
+    const legGeo = buildProfileGeometry(TROUSER_LEG_PROFILE, LEG_LENGTH, 56, 80);
+    const leg = new THREE.Mesh(legGeo, material);
+    leg.position.set(side * 0.115, 0, 0);
+    leg.castShadow = true;
+    leg.receiveShadow = true;
+    group.add(leg);
+  }
+
+  // --- Waistband detail (subtle ridge at top) ---
+  const beltBandGeo = new THREE.TorusGeometry(0.225, 0.012, 12, 64);
+  beltBandGeo.scale(1.0, 0.72, 1.0); // flatten into an ellipse
+  const beltBandMat = new THREE.MeshPhysicalMaterial({
+    color: 0x1a2030, roughness: 0.35, metalness: 0.1, clearcoat: 0.5,
+  });
+  const beltBand = new THREE.Mesh(beltBandGeo, beltBandMat);
+  beltBand.rotation.x = Math.PI / 2;
+  beltBand.position.y = LEG_LENGTH - 0.05 + YOKE_HEIGHT - 0.01;
+  beltBand.castShadow = true;
+  group.add(beltBand);
+
+  return group;
+}
+
+// ==========================================================================
+//  JACKET
+// ==========================================================================
+// A torso shell with broad shoulders, narrower waist, sleeves angled down.
+// Lapels are two flat panels extending from the collar area down to mid-
+// chest. Open front (two mirrored halves with a vertical gap) so it reads
+// as "worn with visible shirt behind it" — hints at the invisible wearer.
+
+const JACKET_BODY_PROFILE = [
+  [0.00, 0.00, 0.00],  // closed bottom pole
+  [0.02, 0.22, 0.16],  // hem
+  [0.10, 0.28, 0.20],  // lower body
+  [0.25, 0.30, 0.21],  // hip (flares out slightly for fit)
+  [0.45, 0.27, 0.19],  // waist suppression
+  [0.65, 0.34, 0.22],  // chest
+  [0.78, 0.42, 0.24],  // upper chest
+  [0.88, 0.48, 0.24],  // shoulder width
+  [0.93, 0.44, 0.22],  // shoulder taper
+  [0.98, 0.30, 0.18],  // collar approach
+  [1.00, 0.00, 0.00],  // closed top
+];
+
+const JACKET_SLEEVE_PROFILE = [
+  [0.00, 0.065, 0.06], // cuff
+  [0.05, 0.07, 0.065], // cuff top
+  [0.30, 0.075, 0.07], // forearm
+  [0.55, 0.085, 0.078],// elbow
+  [0.78, 0.10, 0.094], // bicep
+  [0.95, 0.12, 0.11],  // shoulder attachment
+  [1.00, 0.12, 0.11],
+];
+
+function buildJacket(material) {
+  const group = new THREE.Group();
+
+  const BODY_HEIGHT = 0.90;
+  const SLEEVE_LENGTH = 0.70;
+
+  // --- Body shell ---
+  const bodyGeo = buildProfileGeometry(JACKET_BODY_PROFILE, BODY_HEIGHT, 96, 120);
+  const body = new THREE.Mesh(bodyGeo, material);
+  body.position.y = 0;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+
+  // --- Sleeves ---
+  // Mounted at the shoulder broadest band, angled down and slightly forward.
+  const shoulderY = 0.88 * BODY_HEIGHT;
+  for (const side of [-1, 1]) {
+    const sleeveGeo = buildProfileGeometry(JACKET_SLEEVE_PROFILE, SLEEVE_LENGTH, 56, 80);
     const sleeve = new THREE.Mesh(sleeveGeo, material);
-    // Capsule is Y-axis by default. Rotate 90° around Z so length runs
-    // left-right, then rotate slightly around X to angle down+forward.
-    sleeve.rotation.order = "ZXY";
-    sleeve.rotation.z = side * (Math.PI / 2.2);
-    sleeve.rotation.x = -0.18;
-    // Attach just inside the shoulder surface so the arm blends into the
-    // outline rather than floating apart from it.
-    sleeve.position.set(side * (shoulderW * 0.8), shoulderY, 0.02);
+    // Orient the sleeve so its "bottom" (cuff, v=0) points down-out and its
+    // "top" (shoulder attachment, v=1) mounts to the body.
+    sleeve.rotation.order = "YZX";
+    sleeve.rotation.z = side * (Math.PI * 0.52); // almost horizontal, slight droop
+    sleeve.rotation.y = side * 0.05;
+    sleeve.position.set(side * 0.46, shoulderY - 0.25, 0.02);
     sleeve.castShadow = true;
     sleeve.receiveShadow = true;
     group.add(sleeve);
   }
 
-  // --- Neck (matte) ---
-  const neckY = TORSO_Y + TORSO_HEIGHT;
-  const neckGeo = new THREE.CylinderGeometry(0.082, 0.095, 0.07, 24);
-  const neck = new THREE.Mesh(neckGeo, mannequinMat);
-  neck.position.y = neckY + 0.035;
-  neck.castShadow = true;
-  group.add(neck);
+  // --- Lapels ---
+  // Two flat angled panels at the front chest, extending from collar down
+  // to the top button. Built as thin extruded shapes so they have visible
+  // depth catching light.
+  const lapelShape = new THREE.Shape();
+  lapelShape.moveTo(0, 0);
+  lapelShape.lineTo(0.09, -0.02);
+  lapelShape.lineTo(0.11, -0.28); // notch / gorge
+  lapelShape.lineTo(0.04, -0.42); // lapel bottom point
+  lapelShape.lineTo(0.0, -0.42);
+  lapelShape.lineTo(0.0, 0);
+  const lapelGeo = new THREE.ExtrudeGeometry(lapelShape, { depth: 0.01, bevelEnabled: false });
+  for (const side of [-1, 1]) {
+    const lapel = new THREE.Mesh(lapelGeo, material);
+    lapel.scale.x = side;
+    lapel.position.set(0, 0.70 * BODY_HEIGHT, JACKET_BODY_PROFILE.find(p => p[0] === 0.78)[2] + 0.005);
+    lapel.rotation.y = side * -0.12;
+    lapel.castShadow = true;
+    lapel.receiveShadow = true;
+    group.add(lapel);
+  }
 
-  // --- Head (matte) ---
-  // Featureless egg-shape. Slightly elongated vertically for a more realistic
-  // mannequin feel.
-  const headGeo = new THREE.SphereGeometry(0.135, 64, 64);
-  headGeo.scale(0.95, 1.2, 0.98);
-  const head = new THREE.Mesh(headGeo, mannequinMat);
-  head.position.y = neckY + 0.07 + 0.15;
-  head.castShadow = true;
-  group.add(head);
+  // --- Collar ---
+  // Small horseshoe band behind the neck, slightly raised. Fabric-covered.
+  const collarShape = new THREE.Shape();
+  collarShape.absarc(0, 0, 0.16, Math.PI * 0.15, Math.PI * 0.85, false);
+  collarShape.absarc(0, 0, 0.13, Math.PI * 0.85, Math.PI * 0.15, true);
+  const collarGeo = new THREE.ExtrudeGeometry(collarShape, { depth: 0.06, bevelEnabled: false });
+  const collar = new THREE.Mesh(collarGeo, material);
+  collar.rotation.x = -Math.PI / 2;
+  collar.position.set(0, 0.92 * BODY_HEIGHT, -0.02);
+  collar.castShadow = true;
+  group.add(collar);
+
+  // --- Buttons ---
+  // Two-button stance (classic American cut). Small metallic discs on the
+  // right front. Subtle but adds detail.
+  const buttonMat = new THREE.MeshPhysicalMaterial({
+    color: 0x2a2420, roughness: 0.35, metalness: 0.3, clearcoat: 0.6,
+  });
+  for (let i = 0; i < 2; i++) {
+    const btn = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.006, 20), buttonMat);
+    btn.rotation.x = Math.PI / 2;
+    btn.position.set(0.02, 0.42 * BODY_HEIGHT - i * 0.11, 0.22);
+    group.add(btn);
+  }
 
   return group;
 }
 
-// --- glTF loader -------------------------------------------------------------
+// ==========================================================================
+//  SUIT (jacket + trouser stacked)
+// ==========================================================================
+function buildSuit(material) {
+  const group = new THREE.Group();
+
+  const trouser = buildTrouser(material);
+  trouser.position.y = -1.15;
+  group.add(trouser);
+
+  const jacket = buildJacket(material);
+  jacket.position.y = 0.0;
+  group.add(jacket);
+
+  return group;
+}
+
+// ==========================================================================
+//  ENTRY — what gets mounted depends on the picker
+// ==========================================================================
+export function buildPlaceholderGarment(material) {
+  // Default landing shape — a suit shows off the most fabric surface with
+  // the most variety of tailored curves. If the rep just wants to show a
+  // swatch, the suit is the most impressive default.
+  return buildSuit(material);
+}
+
+export function buildGarmentByName(name, material) {
+  switch (name) {
+    case "trouser": return buildTrouser(material);
+    case "jacket":  return buildJacket(material);
+    case "suit":    return buildSuit(material);
+    case "placeholder":
+    default:        return buildSuit(material);
+  }
+}
+
+// --- glTF loader (still supported if user drops in a real model) ----------
 
 const NON_FABRIC_HINTS = ["head", "face", "eye", "brow", "lash", "hair", "tooth", "tongue", "hand", "finger", "foot", "toe", "skin", "nail"];
 function isNonFabricMesh(name) {
@@ -203,7 +301,7 @@ function isNonFabricMesh(name) {
 }
 
 const loader = new GLTFLoader();
-function loadModel(url, fabricMaterial, mannequinMaterial) {
+function loadModel(url, fabricMaterial) {
   return new Promise((resolve) => {
     fetch(url, { method: "HEAD" }).then(r => {
       if (!r.ok) return resolve(null);
@@ -214,7 +312,10 @@ function loadModel(url, fabricMaterial, mannequinMaterial) {
           root.traverse(obj => {
             if (obj.isMesh) {
               const useFabric = !isNonFabricMesh(obj.name);
-              obj.material = useFabric ? fabricMaterial : (mannequinMaterial || makeMannequinMaterial());
+              const neutralMat = new THREE.MeshPhysicalMaterial({
+                color: 0x1a2638, roughness: 0.5, metalness: 0.0,
+              });
+              obj.material = useFabric ? fabricMaterial : neutralMat;
               obj.castShadow = true;
               obj.receiveShadow = true;
             }
@@ -229,9 +330,9 @@ function loadModel(url, fabricMaterial, mannequinMaterial) {
 }
 
 export function tryLoadModel(name, fabricMaterial) {
-  return loadModel(`./assets/models/${name}.glb`, fabricMaterial, null);
+  return loadModel(`./assets/models/${name}.glb`, fabricMaterial);
 }
 
 export function tryLoadMannequin(fabricMaterial) {
-  return loadModel("./assets/models/mannequin.glb", fabricMaterial, makeMannequinMaterial());
+  return loadModel("./assets/models/mannequin.glb", fabricMaterial);
 }

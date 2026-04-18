@@ -8,7 +8,7 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 import { createScene } from "./scene.js";
-import { buildPlaceholderGarment, tryLoadModel, tryLoadMannequin } from "./garments.js";
+import { buildPlaceholderGarment, buildGarmentByName, tryLoadModel } from "./garments.js";
 import { applySwatchToMaterial, buildWeaveNormalMap, buildProceduralSwatch } from "./swatch.js";
 
 // ---- Renderer -------------------------------------------------------------
@@ -32,7 +32,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // ---- Camera ---------------------------------------------------------------
 
 const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
-camera.position.set(0, 1.5, 3.4);
+camera.position.set(0, 0.6, 3.6);
 
 // ---- Scene ----------------------------------------------------------------
 
@@ -41,7 +41,7 @@ const { scene, setGridVisible } = createScene(renderer);
 // ---- Controls -------------------------------------------------------------
 
 const controls = new OrbitControls(camera, canvas);
-controls.target.set(0, 1.25, 0);
+controls.target.set(0, 0.4, 0);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.minDistance = 1.4;
@@ -112,28 +112,15 @@ function mountGarment(name) {
     const c = GARMENT_ROOT.children.pop();
     c.traverse?.(o => { if (o.isMesh && o.geometry) o.geometry.dispose?.(); });
   }
-  if (name === "placeholder") {
-    // Prefer a real mannequin.glb if one's been dropped in; otherwise fall
-    // back to the procedural dress-form. Keeps the existing Phase-1
-    // experience working until the user sources a model.
-    tryLoadMannequin(sharedMaterial).then(obj => {
-      if (obj) GARMENT_ROOT.add(obj);
-      else GARMENT_ROOT.add(buildPlaceholderGarment(sharedMaterial));
-    });
-  } else {
-    tryLoadModel(name, sharedMaterial).then(obj => {
-      if (obj) GARMENT_ROOT.add(obj);
-      else {
-        // Fall back: real mannequin if present, else the procedural form
-        tryLoadMannequin(sharedMaterial).then(m => {
-          GARMENT_ROOT.add(m || buildPlaceholderGarment(sharedMaterial));
-        });
-        toast(`No ${name}.glb yet — drop one into public/assets/models/`);
-      }
-    });
-  }
+  // Prefer a custom glTF if the user dropped one into /assets/models/ —
+  // otherwise generate the garment procedurally. Procedural is always
+  // available, so every button works immediately.
+  tryLoadModel(name === "placeholder" ? "suit" : name, sharedMaterial).then(obj => {
+    if (obj) { GARMENT_ROOT.add(obj); return; }
+    GARMENT_ROOT.add(buildGarmentByName(name, sharedMaterial));
+  });
 }
-mountGarment("placeholder");
+mountGarment("suit");
 
 // ---- UI wiring ------------------------------------------------------------
 
