@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: fabric-visualizer
+    runtime: static
+    staticPublishPath: ./public
+    buildCommand: ""
+    pullRequestPreviewsEnabled: true
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=3600

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Fabric Visualizer — Walker Brothers</title>
+<style>
+  :root {
+    --bg: #0b1628;
+    --surface: #111e35;
+    --surface-2: #1a2940;
+    --surface-3: #243553;
+    --border: #1e3a5f;
+    --border-subtle: #162a47;
+    --text: #e7ecf3;
+    --text-2: #a9b6cb;
+    --text-3: #64748b;
+    --accent: #4ade80;
+    --gold: #d4af37;
+    --gold-dim: rgba(212, 175, 55, 0.15);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+  #app { display: grid; grid-template-columns: minmax(280px, 320px) 1fr; height: 100dvh; }
+  @media (max-width: 768px) { #app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } }
+
+  #panel {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 20px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .title {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    margin: 0 0 4px;
+  }
+  .subtitle { font-size: 11px; color: var(--text-3); letter-spacing: 0.1em; text-transform: uppercase; }
+  .section { display: flex; flex-direction: column; gap: 8px; }
+  .section-label { font-size: 11px; color: var(--text-3); letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600; }
+
+  button, .btn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  button:hover, .btn:hover { background: var(--surface-3); border-color: var(--gold); }
+  button.primary { background: var(--gold-dim); color: var(--gold); border-color: rgba(212,175,55,0.4); }
+  button.primary:hover { background: rgba(212,175,55,0.25); }
+
+  input[type=file] { display: none; }
+  .upload-cta {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 24px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.15s;
+    color: var(--text-2);
+  }
+  .upload-cta:hover { border-color: var(--gold); color: var(--gold); background: var(--gold-dim); }
+  .upload-cta.has-swatch { border-style: solid; padding: 8px; }
+
+  #swatch-preview {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 6px;
+    background: repeating-conic-gradient(#1a2940 0 25%, #111e35 0 50%) 50% / 16px 16px;
+    background-size: 100% 100%;
+  }
+
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12px; color: var(--text-2); }
+  .slider-row { display: flex; align-items: center; gap: 10px; }
+  input[type=range] { flex: 1; accent-color: var(--gold); }
+  input[type=number] {
+    width: 56px;
+    padding: 4px 6px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    text-align: right;
+  }
+
+  .garment-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .garment-btn {
+    padding: 12px 8px;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--text-2);
+    transition: all 0.15s;
+    text-align: center;
+  }
+  .garment-btn:hover { color: var(--text); border-color: var(--gold); }
+  .garment-btn.active { background: var(--gold-dim); color: var(--gold); border-color: var(--gold); }
+
+  #viewport { position: relative; background: radial-gradient(circle at 50% 40%, #1a2a47 0%, #0b1628 80%); }
+  #scene-canvas { width: 100%; height: 100%; display: block; cursor: grab; }
+  #scene-canvas:active { cursor: grabbing; }
+
+  .hud { position: absolute; top: 14px; left: 14px; font-size: 11px; color: var(--text-3); letter-spacing: 0.08em; pointer-events: none; text-transform: uppercase; }
+  .hint { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--text-3); pointer-events: none; }
+
+  .footnote { font-size: 10px; color: var(--text-3); line-height: 1.5; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; background: var(--surface-2); padding: 1px 5px; border-radius: 3px; font-size: 10px; color: var(--gold); }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <div>
+      <div class="subtitle">Walker Brothers</div>
+      <h1 class="title">Fabric Visualizer</h1>
+    </div>
+
+    <div class="section">
+      <div class="section-label">1 · Upload swatch</div>
+      <label class="upload-cta" id="upload-cta" for="swatch-input">
+        <div id="upload-placeholder" style="font-size:13px;">Drop or browse image</div>
+        <img id="swatch-preview-img" style="display:none;width:100%;border-radius:6px;" alt=""/>
+      </label>
+      <input type="file" id="swatch-input" accept="image/*"/>
+      <div class="footnote">PNG or JPG. Tileable swatches (repeatable pattern) work best.</div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">2 · Garment</div>
+      <div class="garment-picker" id="garment-picker">
+        <button class="garment-btn active" data-garment="placeholder">Placeholder</button>
+        <button class="garment-btn" data-garment="trouser" disabled title="Drop trouser.glb into assets/models/">Trouser</button>
+        <button class="garment-btn" data-garment="jacket" disabled title="Drop jacket.glb into assets/models/">Jacket</button>
+        <button class="garment-btn" data-garment="suit" disabled title="Drop suit.glb into assets/models/">Suit</button>
+      </div>
+      <div class="footnote">Placeholder uses a draped-cloth primitive so you can see the texture pipeline working. Real garment models go in <code>public/assets/models/</code> — see README.</div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">3 · Tiling</div>
+      <div class="field">
+        <label>Repeats across (horizontal)</label>
+        <div class="slider-row">
+          <input type="range" id="repeat-x" min="1" max="40" step="1" value="8"/>
+          <input type="number" id="repeat-x-num" min="1" max="40" step="1" value="8"/>
+        </div>
+      </div>
+      <div class="field">
+        <label>Repeats down (vertical)</label>
+        <div class="slider-row">
+          <input type="range" id="repeat-y" min="1" max="40" step="1" value="8"/>
+          <input type="number" id="repeat-y-num" min="1" max="40" step="1" value="8"/>
+        </div>
+      </div>
+      <div class="field">
+        <label>Rotate pattern</label>
+        <div class="slider-row">
+          <input type="range" id="rotate" min="-180" max="180" step="1" value="0"/>
+          <input type="number" id="rotate-num" min="-180" max="180" step="1" value="0"/>
+        </div>
+      </div>
+      <div class="field">
+        <label>Cloth weave depth</label>
+        <div class="slider-row">
+          <input type="range" id="weave" min="0" max="100" step="1" value="35"/>
+          <input type="number" id="weave-num" min="0" max="100" step="1" value="35"/>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">4 · View</div>
+      <button id="reset-camera">Reset camera</button>
+      <button id="toggle-grid">Toggle grid</button>
+    </div>
+  </aside>
+
+  <main id="viewport">
+    <canvas id="scene-canvas"></canvas>
+    <div class="hud" id="hud">Drag to rotate · scroll to zoom · right-click to pan</div>
+    <div class="hint" id="hint">Upload a swatch to apply it to the garment</div>
+  </main>
+</div>
+
+<!-- Three.js via ES-module CDN. No build step — modern browsers handle this natively. -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.162.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.162.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
