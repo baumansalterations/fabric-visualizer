@@ -1,70 +1,131 @@
-// Garment meshes — a tailored dress-form placeholder with menswear
-// proportions plus a glTF loader for when real garments land in
-// /assets/models/.
+// Garment meshes — a procedurally-generated anatomical dress form.
 //
-// The placeholder is three primitives composed to read as "classic menswear
-// tailor's dress form on a pedestal stand":
-//   1. Torso — closed LatheGeometry with a proper human silhouette (hip →
-//      pinched waist → wide chest → shoulder dropoff → neck).
-//   2. Arms — CapsuleGeometry (capped cylinders) angled out from the
-//      shoulders like short sleeve stubs.
-//   3. Head + neck — matte, non-fabric so the swatch doesn't sit on the
-//      head awkwardly. Mounted on a thin pedestal pole + disc base.
+// Key insight over the earlier lathe version: real human torsos are NOT
+// axisymmetric. Shoulders spread much wider than the chest is deep. A
+// tailor's dress form reads wrong if chest/shoulders have the same front-
+// to-back depth as side-to-side width. We fix that by building the torso
+// as a parametric surface with ELLIPTICAL cross-sections — separate
+// width and depth at every height, smoothly interpolated between keyframe
+// profile points.
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
-// --- Neutral mannequin material (not fabric) --------------------------------
+// --- Mannequin material (non-fabric parts: head, neck, pedestal) -----------
 function makeMannequinMaterial() {
   return new THREE.MeshPhysicalMaterial({
     color: 0x1a2638,
-    roughness: 0.55,
+    roughness: 0.5,
     metalness: 0.0,
-    clearcoat: 0.2,
-    clearcoatRoughness: 0.7,
+    clearcoat: 0.25,
+    clearcoatRoughness: 0.6,
   });
 }
 
-// --- Torso profile -----------------------------------------------------------
-// Pairs of (radius, height). Heights normalized 0..1 within the torso. The
-// profile starts at (0, 0) and ends at (0, 1.0) so the LatheGeometry closes
-// cleanly at both poles (flat bottom, capped neck top).
+// --- Torso profile keyframes ------------------------------------------------
+// [v, width, depth] where:
+//   v     — normalized height, 0 at base to 1 at neck top
+//   width — half-axis on the X axis (side to side)
+//   depth — half-axis on the Z axis (front to back)
 //
-// Proportions: widest band at ~75% (chest + shoulder line), waist pinch at
-// ~35% height, hips slightly narrower than chest. This matches a classic
-// menswear tailor's form — chest dominates, hips sit tucked.
+// Width > depth everywhere for a menswear chest. Shoulders spread wider
+// without spreading deeper. Waist pinches on both axes but more on width.
+// First and last entries close the lathe to solid caps at the poles.
 const TORSO_PROFILE = [
-  [0.00, 0.00],   // bottom pole (closes base)
-  [0.12, 0.00],   // flat bottom disc edge
-  [0.28, 0.02],
-  [0.30, 0.08],   // lower hip
-  [0.28, 0.18],   // upper hip
-  [0.25, 0.28],   // lower waist
-  [0.23, 0.36],   // waist (narrowest middle)
-  [0.25, 0.46],   // upper waist
-  [0.30, 0.58],   // lower chest
-  [0.34, 0.68],   // mid chest
-  [0.36, 0.76],   // upper chest (widest)
-  [0.36, 0.82],   // shoulder line
-  [0.34, 0.86],   // shoulder crest
-  [0.22, 0.91],   // shoulder dropoff
-  [0.14, 0.95],
-  [0.10, 0.99],   // neck base
-  [0.095, 1.03],  // neck
-  [0.095, 1.06],
-  [0.00, 1.06],   // top pole (closes neck)
+  [0.00, 0.00, 0.00],  // closed bottom pole (solid cap)
+  [0.02, 0.20, 0.14],  // bottom disc edge
+  [0.08, 0.30, 0.20],  // lower hips
+  [0.16, 0.32, 0.21],  // hip widest
+  [0.24, 0.30, 0.20],  // upper hips
+  [0.32, 0.26, 0.19],  // lower waist taper
+  [0.40, 0.23, 0.17],  // waist (narrowest)
+  [0.48, 0.26, 0.19],  // upper waist
+  [0.56, 0.31, 0.22],  // lower chest
+  [0.66, 0.37, 0.24],  // mid chest
+  [0.74, 0.42, 0.25],  // upper chest
+  [0.80, 0.46, 0.24],  // shoulder width peak (widest point overall)
+  [0.84, 0.44, 0.22],  // shoulder top
+  [0.88, 0.34, 0.19],  // shoulder slope toward neck
+  [0.92, 0.20, 0.15],  // upper shoulder taper
+  [0.95, 0.12, 0.11],  // neck base
+  [0.98, 0.095, 0.095],// neck
+  [1.00, 0.00, 0.00],  // closed top pole (solid cap, neck top)
 ];
 
+// Interpolate profile with a cosine-smoothed ease so vertical transitions
+// read as organic curves, not piecewise-linear kinks. Returns [width, depth]
+// at a given normalized height `v` in 0..1.
+function profileAt(v) {
+  const p = TORSO_PROFILE;
+  for (let i = 0; i < p.length - 1; i++) {
+    const [v0, w0, d0] = p[i];
+    const [v1, w1, d1] = p[i + 1];
+    if (v >= v0 && v <= v1) {
+      const t = (v1 === v0) ? 0 : (v - v0) / (v1 - v0);
+      const s = t * t * (3 - 2 * t); // smoothstep
+      return [w0 + (w1 - w0) * s, d0 + (d1 - d0) * s];
+    }
+  }
+  const last = p[p.length - 1];
+  return [last[1], last[2]];
+}
+
+// Build the torso as a parametric BufferGeometry. Elliptical cross-sections
+// at every height, smooth interpolation between keyframes, clean UV mapping
+// (u around the body, v up the body) so vertical-warp fabric patterns
+// behave correctly out of the box.
+function buildTorsoGeometry(totalHeight) {
+  const radialSegments = 96;
+  const heightSegments = 140;
+
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let iy = 0; iy <= heightSegments; iy++) {
+    const v = iy / heightSegments;
+    const [width, depth] = profileAt(v);
+    const y = v * totalHeight;
+
+    for (let ix = 0; ix <= radialSegments; ix++) {
+      const u = ix / radialSegments;
+      const theta = u * Math.PI * 2;
+      const x = width * Math.cos(theta);
+      const z = depth * Math.sin(theta);
+      positions.push(x, y, z);
+      uvs.push(u, v);
+    }
+  }
+
+  for (let iy = 0; iy < heightSegments; iy++) {
+    for (let ix = 0; ix < radialSegments; ix++) {
+      const a = iy * (radialSegments + 1) + ix;
+      const b = a + 1;
+      const c = a + (radialSegments + 1);
+      const d = c + 1;
+      // Two triangles per quad, wound CCW facing outward
+      indices.push(a, c, b);
+      indices.push(b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// --- Build the whole placeholder mannequin ---------------------------------
 export function buildPlaceholderGarment(material) {
   const group = new THREE.Group();
 
-  const TORSO_HEIGHT = 1.0;      // world units from bottom of form to top of neck
-  const TORSO_Y = 0.55;           // where the bottom of the torso sits in the world
+  const TORSO_HEIGHT = 1.0;
+  const TORSO_Y = 0.55;
   const mannequinMat = makeMannequinMaterial();
 
-  // --- Pedestal stand ---
-  // Classic menswear dress-form base: thin pole rising to a disc, disc under
-  // the torso. Matte black so it recedes visually.
+  // --- Pedestal ---
   const baseGeo = new THREE.CylinderGeometry(0.26, 0.30, 0.025, 48);
   const base = new THREE.Mesh(baseGeo, new THREE.MeshPhysicalMaterial({
     color: 0x08101e, roughness: 0.15, metalness: 0.2,
@@ -84,8 +145,7 @@ export function buildPlaceholderGarment(material) {
   group.add(pole);
 
   // --- Torso (fabric) ---
-  const torsoPts = TORSO_PROFILE.map(([r, h]) => new THREE.Vector2(r, h * TORSO_HEIGHT));
-  const torsoGeo = new THREE.LatheGeometry(torsoPts, 96);
+  const torsoGeo = buildTorsoGeometry(TORSO_HEIGHT);
   const torso = new THREE.Mesh(torsoGeo, material);
   torso.position.y = TORSO_Y;
   torso.castShadow = true;
@@ -93,40 +153,41 @@ export function buildPlaceholderGarment(material) {
   group.add(torso);
 
   // --- Arms (fabric) ---
-  // CapsuleGeometry creates a proper rounded-end cylinder — no open ends to
-  // peek inside. Mounted at the shoulder level, angled out and slightly
-  // forward/down to suggest a natural rest pose.
-  const shoulderY = TORSO_Y + (0.84 * TORSO_HEIGHT); // upper chest band
+  // Capsule sleeves at the shoulder broadest band. Angled down + slightly
+  // forward so they read as arms-at-rest, not T-pose.
+  const shoulderY = TORSO_Y + 0.82 * TORSO_HEIGHT;
+  const [shoulderW] = profileAt(0.80); // matches the widest-point width
   for (const side of [-1, 1]) {
-    const sleeveGeo = new THREE.CapsuleGeometry(0.09, 0.32, 8, 32);
+    const sleeveGeo = new THREE.CapsuleGeometry(0.085, 0.34, 10, 32);
     const sleeve = new THREE.Mesh(sleeveGeo, material);
-    // Capsule is Y-axis aligned by default. Rotate 90° around Z so it points
-    // sideways, then add a slight forward tilt.
-    sleeve.rotation.z = side * (Math.PI / 2);
-    sleeve.rotation.x = -0.12;
-    // Push out to the shoulder, slightly down from the shoulder crest
-    sleeve.position.set(side * 0.35, shoulderY - 0.02, 0.02);
+    // Capsule is Y-axis by default. Rotate 90° around Z so length runs
+    // left-right, then rotate slightly around X to angle down+forward.
+    sleeve.rotation.order = "ZXY";
+    sleeve.rotation.z = side * (Math.PI / 2.2);
+    sleeve.rotation.x = -0.18;
+    // Attach just inside the shoulder surface so the arm blends into the
+    // outline rather than floating apart from it.
+    sleeve.position.set(side * (shoulderW * 0.8), shoulderY, 0.02);
     sleeve.castShadow = true;
     sleeve.receiveShadow = true;
     group.add(sleeve);
   }
 
-  // --- Neck stub (matte) ---
-  // Short cylinder between the torso's capped top and the head. Non-fabric
-  // so the swatch doesn't wrap an awkward neck region.
+  // --- Neck (matte) ---
   const neckY = TORSO_Y + TORSO_HEIGHT;
-  const neckGeo = new THREE.CylinderGeometry(0.085, 0.095, 0.06, 24);
+  const neckGeo = new THREE.CylinderGeometry(0.082, 0.095, 0.07, 24);
   const neck = new THREE.Mesh(neckGeo, mannequinMat);
-  neck.position.y = neckY + 0.03;
+  neck.position.y = neckY + 0.035;
   neck.castShadow = true;
   group.add(neck);
 
   // --- Head (matte) ---
-  // Slightly vertically elongated sphere — classic featureless mannequin head.
-  const headGeo = new THREE.SphereGeometry(0.135, 48, 48);
-  headGeo.scale(1, 1.2, 1);
+  // Featureless egg-shape. Slightly elongated vertically for a more realistic
+  // mannequin feel.
+  const headGeo = new THREE.SphereGeometry(0.135, 64, 64);
+  headGeo.scale(0.95, 1.2, 0.98);
   const head = new THREE.Mesh(headGeo, mannequinMat);
-  head.position.y = neckY + 0.06 + 0.15;
+  head.position.y = neckY + 0.07 + 0.15;
   head.castShadow = true;
   group.add(head);
 
@@ -134,17 +195,8 @@ export function buildPlaceholderGarment(material) {
 }
 
 // --- glTF loader -------------------------------------------------------------
-// Drop-in for real garments AND for the base mannequin. Falls back silently
-// to null if the file is missing so main.js can swap to the procedural
-// placeholder.
-//
-// Heuristic for multi-mesh humanoid models (e.g. a Mixamo / Quaternius
-// character that has separate head + body + eyes + hands meshes): we only
-// apply the fabric material to meshes whose name suggests "body" or
-// "clothing." Anything that looks like a head, face, eye, hair, hand, or
-// foot keeps a neutral matte material so the swatch doesn't wrap a face.
-const NON_FABRIC_HINTS = ["head", "face", "eye", "brow", "lash", "hair", "tooth", "tongue", "hand", "finger", "foot", "toe", "skin", "nail"];
 
+const NON_FABRIC_HINTS = ["head", "face", "eye", "brow", "lash", "hair", "tooth", "tongue", "hand", "finger", "foot", "toe", "skin", "nail"];
 function isNonFabricMesh(name) {
   const n = (name || "").toLowerCase();
   return NON_FABRIC_HINTS.some(h => n.includes(h));
@@ -176,14 +228,10 @@ function loadModel(url, fabricMaterial, mannequinMaterial) {
   });
 }
 
-// Try to load a named garment glb (trouser / jacket / suit / etc.)
 export function tryLoadModel(name, fabricMaterial) {
   return loadModel(`./assets/models/${name}.glb`, fabricMaterial, null);
 }
 
-// Try to load a base mannequin model. Used as the default form when present —
-// replaces the procedural dress-form placeholder. Drop a glTF into
-// public/assets/models/mannequin.glb and reload to enable.
 export function tryLoadMannequin(fabricMaterial) {
   return loadModel("./assets/models/mannequin.glb", fabricMaterial, makeMannequinMaterial());
 }
