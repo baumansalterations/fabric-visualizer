@@ -1,12 +1,14 @@
-// The swatch pipeline: take an uploaded image, apply it as a tileable texture
-// on the garment material, and generate a procedural fabric-weave normal map
-// so the cloth reads as woven rather than painted-on.
+// Swatch pipeline + procedural preset fabric generator.
+//
+// `applySwatchToMaterial` — updates the live fabric texture's tiling.
+// `buildWeaveNormalMap` — cloth weave normal map for subtle cloth depth.
+// `buildProceduralSwatch` — generates preset fabric swatches (twill,
+//                           herringbone, glen plaid, windowpane, birdseye,
+//                           solid) as CanvasTextures so the rep can try the
+//                           pipeline without uploading anything.
 
 import * as THREE from "three";
 
-// Apply a swatch texture to a material. Handles repeat counts and rotation,
-// which together give the rep control over how coarse/fine the pattern reads
-// against the garment's real-world scale.
 export function applySwatchToMaterial(material, opts) {
   if (!material.map) return;
   const tex = material.map;
@@ -14,23 +16,15 @@ export function applySwatchToMaterial(material, opts) {
   const ry = Math.max(0.1, opts.repeatY || 1);
   const rot = opts.rotation || 0;
   tex.repeat.set(rx, ry);
-  // Rotate around the center of the tile so a glen plaid stays centered
-  // rather than sliding off when the angle changes.
   tex.center.set(0.5, 0.5);
   tex.rotation = rot;
   tex.needsUpdate = true;
   material.needsUpdate = true;
 }
 
-// Procedural fabric-weave normal map. Real woven cloth has a sub-millimeter
-// high-frequency pattern (warp + weft threads) that picks up light slightly
-// differently than a flat surface. Baking that into a normal map lets the
-// shader add it on top of whatever flat swatch image the user uploaded —
-// which means even a boring photograph of a swatch reads as three-dimensional
-// cloth once applied.
-//
-// `depth` is 0–100 from the UI slider. 0 = smooth (painted-on), 100 = coarse
-// burlap-grade weave. Default 35 reads as fine wool.
+// --- Weave normal map -------------------------------------------------------
+// A plain-weave pattern baked into a normal map. Makes even a flat swatch
+// photo read as woven cloth when the shader catches rim light.
 export function buildWeaveNormalMap(depth = 35) {
   const size = 256;
   const canvas = document.createElement("canvas");
@@ -39,32 +33,22 @@ export function buildWeaveNormalMap(depth = 35) {
   const img = ctx.createImageData(size, size);
   const strength = Math.max(0, Math.min(1, depth / 100));
 
-  // Build a plain-weave pattern: alternating over/under threads. Warp runs
-  // vertically (pattern axis V), weft runs horizontally (pattern axis U).
-  // We synthesize a grayscale height field and then convert to a normal map
-  // via finite differences.
-  const warpFreq = 48; // threads per tile — tight enough to read as fabric
-  const weftFreq = 48;
+  const warpFreq = 48, weftFreq = 48;
 
-  function height(x, y) {
-    const u = x / size;
-    const v = y / size;
-    const warp = Math.sin(v * Math.PI * 2 * warpFreq);
-    const weft = Math.sin(u * Math.PI * 2 * weftFreq);
-    // Plain weave: warp dominates where weft is above zero, and vice versa.
-    // Add a small high-frequency noise so threads aren't perfectly regular.
-    const interleave = (warp + weft) * 0.5;
-    const noise = (pseudoNoise(u * 128, v * 128) - 0.5) * 0.15;
-    return interleave * 0.8 + noise;
-  }
-
-  function pseudoNoise(x, y) {
-    // Cheap deterministic hash — no lib dependency.
+  function noise(x, y) {
     const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
     return s - Math.floor(s);
   }
 
-  // Build normal map via central differences on the height field.
+  function height(x, y) {
+    const u = x / size, v = y / size;
+    const warp = Math.sin(v * Math.PI * 2 * warpFreq);
+    const weft = Math.sin(u * Math.PI * 2 * weftFreq);
+    const interleave = (warp + weft) * 0.5;
+    const n = (noise(u * 128, v * 128) - 0.5) * 0.15;
+    return interleave * 0.8 + n;
+  }
+
   const eps = 1;
   let i = 0;
   for (let y = 0; y < size; y++) {
@@ -87,7 +71,154 @@ export function buildWeaveNormalMap(depth = 35) {
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(2, 2); // tight — weave should feel small-scale on the garment
+  tex.repeat.set(2, 2);
   tex.needsUpdate = true;
   return tex;
+}
+
+// --- Procedural fabric swatches --------------------------------------------
+// Each generator paints a tileable 256x256 canvas of a classic menswear
+// weave. Returned as a THREE.CanvasTexture with the canvas accessible as
+// tex.image so the UI gallery can show a thumbnail.
+export function buildProceduralSwatch(kind, color = "#3a3a3a") {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+
+  const base = parseColor(color);
+  const light = shade(base, 16);
+  const dark = shade(base, -24);
+
+  switch (kind) {
+    case "twill":        drawTwill(ctx, size, base, dark); break;
+    case "herringbone":  drawHerringbone(ctx, size, base, dark); break;
+    case "glenplaid":    drawGlenPlaid(ctx, size, base, dark, light); break;
+    case "windowpane":   drawWindowpane(ctx, size, base, light); break;
+    case "birdseye":     drawBirdseye(ctx, size, base, light); break;
+    case "solid":
+    default:             drawSolid(ctx, size, base); break;
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// --- helpers ---------------------------------------------------------------
+
+function parseColor(hex) {
+  const m = hex.replace("#", "");
+  const v = parseInt(m, 16);
+  return { r: (v >> 16) & 0xff, g: (v >> 8) & 0xff, b: v & 0xff };
+}
+function shade(c, amt) {
+  return {
+    r: Math.max(0, Math.min(255, c.r + amt)),
+    g: Math.max(0, Math.min(255, c.g + amt)),
+    b: Math.max(0, Math.min(255, c.b + amt)),
+  };
+}
+function rgb(c) { return `rgb(${c.r|0},${c.g|0},${c.b|0})`; }
+
+function drawSolid(ctx, s, base) {
+  ctx.fillStyle = rgb(base);
+  ctx.fillRect(0, 0, s, s);
+  // Subtle variation so solids don't look plastic-flat.
+  const img = ctx.getImageData(0, 0, s, s);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = (Math.random() - 0.5) * 14;
+    img.data[i] = Math.max(0, Math.min(255, img.data[i] + v));
+    img.data[i+1] = Math.max(0, Math.min(255, img.data[i+1] + v));
+    img.data[i+2] = Math.max(0, Math.min(255, img.data[i+2] + v));
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function drawTwill(ctx, s, base, dark) {
+  drawSolid(ctx, s, base);
+  ctx.strokeStyle = rgb(dark);
+  ctx.lineWidth = 1;
+  ctx.lineCap = "square";
+  // Diagonal twill lines — every 6px, slope 2:1
+  for (let x = -s; x < s * 2; x += 6) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x + s, s);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 0.4;
+  for (let x = -s; x < s * 2; x += 3) {
+    ctx.beginPath();
+    ctx.moveTo(x + 1, 0);
+    ctx.lineTo(x + s + 1, s);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawHerringbone(ctx, s, base, dark) {
+  drawSolid(ctx, s, base);
+  ctx.strokeStyle = rgb(dark);
+  ctx.lineWidth = 1;
+  const bandH = 16;
+  for (let yBand = 0; yBand < s; yBand += bandH) {
+    const dir = (yBand / bandH) % 2 === 0 ? 1 : -1;
+    for (let x = -s; x < s * 2; x += 4) {
+      ctx.beginPath();
+      ctx.moveTo(x, yBand);
+      ctx.lineTo(x + dir * bandH, yBand + bandH);
+      ctx.stroke();
+    }
+  }
+}
+
+function drawGlenPlaid(ctx, s, base, dark, light) {
+  drawSolid(ctx, s, base);
+  // Classic Prince-of-Wales glen plaid: alternating thin+thick checks
+  ctx.fillStyle = rgb(dark);
+  // Thick horizontal bands
+  for (let y = 0; y < s; y += 32) {
+    if (((y / 32) | 0) % 4 < 2) ctx.fillRect(0, y, s, 4);
+  }
+  // Thick vertical bands
+  for (let x = 0; x < s; x += 32) {
+    if (((x / 32) | 0) % 4 < 2) ctx.fillRect(x, 0, 4, s);
+  }
+  // Thin accent lines (second color)
+  ctx.fillStyle = rgb(light);
+  for (let y = 0; y < s; y += 32) {
+    if (((y / 32) | 0) % 4 === 2) ctx.fillRect(0, y, s, 1);
+  }
+  for (let x = 0; x < s; x += 32) {
+    if (((x / 32) | 0) % 4 === 2) ctx.fillRect(x, 0, 1, s);
+  }
+}
+
+function drawWindowpane(ctx, s, base, light) {
+  drawSolid(ctx, s, base);
+  ctx.strokeStyle = rgb(light);
+  ctx.lineWidth = 2;
+  // Widely spaced vertical + horizontal lines — the classic windowpane look
+  for (let x = 0; x < s; x += 64) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, s); ctx.stroke();
+  }
+  for (let y = 0; y < s; y += 64) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(s, y); ctx.stroke();
+  }
+}
+
+function drawBirdseye(ctx, s, base, light) {
+  drawSolid(ctx, s, base);
+  ctx.fillStyle = rgb(light);
+  // Tiny flecks on a grid — birdseye texture
+  for (let y = 0; y < s; y += 6) {
+    for (let x = 0; x < s; x += 6) {
+      if (((x / 6) + (y / 6)) % 2 === 0) {
+        ctx.fillRect(x + 2, y + 2, 2, 2);
+      }
+    }
+  }
 }

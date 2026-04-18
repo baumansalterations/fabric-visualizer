@@ -1,71 +1,113 @@
-// Entry point — wires together the scene, the swatch pipeline, and the UI.
-// No build step: runs as a native ES module in the browser.
+// Entry point — wires scene, post-processing, swatch pipeline, and UI.
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 import { createScene } from "./scene.js";
 import { buildPlaceholderGarment, tryLoadModel } from "./garments.js";
-import { applySwatchToMaterial, buildWeaveNormalMap } from "./swatch.js";
+import { applySwatchToMaterial, buildWeaveNormalMap, buildProceduralSwatch } from "./swatch.js";
 
-// ---- Scene setup ----------------------------------------------------------
+// ---- Renderer -------------------------------------------------------------
 
 const canvas = document.getElementById("scene-canvas");
 const viewport = document.getElementById("viewport");
 
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
-renderer.setPixelRatio(window.devicePixelRatio);
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: true,
+  alpha: false,
+  powerPreference: "high-performance",
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
+renderer.toneMappingExposure = 1.05;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
-camera.position.set(0, 1.4, 3.2);
+// ---- Camera ---------------------------------------------------------------
 
-const { scene, gridHelper, setGridVisible } = createScene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+camera.position.set(0, 1.5, 3.4);
+
+// ---- Scene ----------------------------------------------------------------
+
+const { scene, setGridVisible } = createScene(renderer);
+
+// ---- Controls -------------------------------------------------------------
 
 const controls = new OrbitControls(camera, canvas);
-controls.target.set(0, 1.1, 0);
+controls.target.set(0, 1.25, 0);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
-controls.minDistance = 1.2;
+controls.minDistance = 1.4;
 controls.maxDistance = 6;
 controls.maxPolarAngle = Math.PI * 0.52;
+controls.autoRotate = false;
+controls.autoRotateSpeed = 0.7;
+
+// ---- Post-processing ------------------------------------------------------
+// Bloom adds a subtle luminous sheen to highlights, which reads especially
+// well on woven fabrics catching the rim light. Strength kept low so dark
+// navy doesn't bloom into a haze.
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(viewport.clientWidth, viewport.clientHeight),
+  0.35,  // strength
+  0.6,   // radius
+  0.85,  // threshold
+);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
 
 function resize() {
   const w = viewport.clientWidth, h = viewport.clientHeight;
   renderer.setSize(w, h, false);
+  composer.setSize(w, h);
+  bloom.setSize(w, h);
   camera.aspect = w / Math.max(1, h);
   camera.updateProjectionMatrix();
 }
 new ResizeObserver(resize).observe(viewport);
 resize();
 
-// ---- Garment state --------------------------------------------------------
-// Keep a single "current garment root" in the scene. Swapping garments just
-// replaces this subtree. The shared material lives on the outer scope so
-// swatch updates reach whichever garment is mounted.
+// ---- Fabric material ------------------------------------------------------
+// MeshPhysicalMaterial is a superset of MeshStandardMaterial that adds the
+// features fabric visualization actually needs: sheen (for satin, silk, and
+// fine wool) and clearcoat (for coated wool / tech fabrics). Starts matte.
 
-const GARMENT_ROOT = new THREE.Group();
-scene.add(GARMENT_ROOT);
-
-const sharedMaterial = new THREE.MeshStandardMaterial({
-  color: 0x777777,
-  roughness: 0.75,
-  metalness: 0.04,
-  // Fabric weave is added in via a procedural normal map. Regenerated when
-  // the weave-depth slider moves.
+const sharedMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0x888888,
+  roughness: 0.82,
+  metalness: 0.0,
+  sheen: 0.3,
+  sheenColor: new THREE.Color(0xffffff),
+  sheenRoughness: 0.65,
+  clearcoat: 0.0,
   normalMap: buildWeaveNormalMap(35),
   normalScale: new THREE.Vector2(1, 1),
 });
 
-let currentGarment = "placeholder";
+// Apply a subtle procedural swatch by default so the mannequin doesn't
+// look like flat gray paint on first load — a mid-grey twill reads as
+// "ready for your fabric."
+sharedMaterial.map = buildProceduralSwatch("twill", "#4a5366");
+sharedMaterial.map.wrapS = sharedMaterial.map.wrapT = THREE.RepeatWrapping;
+sharedMaterial.map.anisotropy = renderer.capabilities.getMaxAnisotropy();
+sharedMaterial.needsUpdate = true;
+
+// ---- Garment mount --------------------------------------------------------
+
+const GARMENT_ROOT = new THREE.Group();
+scene.add(GARMENT_ROOT);
+
 function mountGarment(name) {
-  currentGarment = name;
-  // Remove existing children
   while (GARMENT_ROOT.children.length) {
     const c = GARMENT_ROOT.children.pop();
     c.traverse?.(o => { if (o.isMesh && o.geometry) o.geometry.dispose?.(); });
@@ -73,12 +115,11 @@ function mountGarment(name) {
   if (name === "placeholder") {
     GARMENT_ROOT.add(buildPlaceholderGarment(sharedMaterial));
   } else {
-    // Real glTF — will bail out silently and fall back if the file isn't there yet.
     tryLoadModel(name, sharedMaterial).then(obj => {
       if (obj) GARMENT_ROOT.add(obj);
       else {
         GARMENT_ROOT.add(buildPlaceholderGarment(sharedMaterial));
-        toast(`No model for "${name}" yet — drop ${name}.glb into public/assets/models/`);
+        toast(`No ${name}.glb yet — drop one into public/assets/models/`);
       }
     });
   }
@@ -92,6 +133,7 @@ const ui = {
   uploadCta: document.getElementById("upload-cta"),
   uploadPlaceholder: document.getElementById("upload-placeholder"),
   swatchPreview: document.getElementById("swatch-preview-img"),
+  presets: document.getElementById("preset-swatches"),
   repeatX: document.getElementById("repeat-x"),
   repeatXNum: document.getElementById("repeat-x-num"),
   repeatY: document.getElementById("repeat-y"),
@@ -100,13 +142,15 @@ const ui = {
   rotateNum: document.getElementById("rotate-num"),
   weave: document.getElementById("weave"),
   weaveNum: document.getElementById("weave-num"),
+  sheen: document.getElementById("sheen"),
+  sheenNum: document.getElementById("sheen-num"),
   garmentPicker: document.getElementById("garment-picker"),
   resetCamera: document.getElementById("reset-camera"),
   toggleGrid: document.getElementById("toggle-grid"),
+  autoRotate: document.getElementById("auto-rotate"),
   hint: document.getElementById("hint"),
 };
 
-// Link sliders + number inputs both directions
 function linkSlider(rangeEl, numEl, onChange) {
   function apply(v) { rangeEl.value = v; numEl.value = v; onChange(parseFloat(v)); }
   rangeEl.addEventListener("input", () => apply(rangeEl.value));
@@ -128,36 +172,87 @@ linkSlider(ui.weave, ui.weaveNum, v => {
   sharedMaterial.normalMap = buildWeaveNormalMap(v);
   sharedMaterial.needsUpdate = true;
 });
+linkSlider(ui.sheen, ui.sheenNum, v => {
+  sharedMaterial.sheen = v / 100;
+  sharedMaterial.sheenRoughness = 0.65 - (v / 100) * 0.4;
+  sharedMaterial.needsUpdate = true;
+});
 
-// Swatch upload
+// Upload handler
+function loadSwatchFromImage(img, previewUrl) {
+  const tex = new THREE.Texture(img);
+  tex.needsUpdate = true;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  sharedMaterial.map?.dispose?.();
+  sharedMaterial.map = tex;
+  sharedMaterial.color.set(0xffffff);
+  sharedMaterial.needsUpdate = true;
+  refreshSwatch();
+  if (previewUrl) {
+    ui.swatchPreview.src = previewUrl;
+    ui.swatchPreview.style.display = "block";
+    ui.uploadPlaceholder.style.display = "none";
+    ui.uploadCta.classList.add("has-swatch");
+  }
+  ui.hint.textContent = "Drag to rotate · scroll to zoom";
+}
+
 ui.swatchInput.addEventListener("change", e => {
   const file = e.target.files?.[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = () => {
     const img = new Image();
-    img.onload = () => {
-      const tex = new THREE.Texture(img);
-      tex.needsUpdate = true;
-      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-      tex.colorSpace = THREE.SRGBColorSpace;
-      tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-      sharedMaterial.map = tex;
-      sharedMaterial.color.set(0xffffff); // neutralize base tint so swatch shows true
-      sharedMaterial.needsUpdate = true;
-      refreshSwatch();
-      // Preview in panel
-      ui.swatchPreview.src = reader.result;
-      ui.swatchPreview.style.display = "block";
-      ui.uploadPlaceholder.style.display = "none";
-      ui.uploadCta.classList.add("has-swatch");
-      ui.hint.textContent = "Drag to rotate · scroll to zoom";
-      toast("Swatch applied");
-    };
+    img.onload = () => { loadSwatchFromImage(img, reader.result); toast("Swatch applied"); };
     img.src = reader.result;
   };
   reader.readAsDataURL(file);
 });
+
+// Preset swatches — procedurally generated thumbnails for common menswear
+// fabrics so a rep can see the pipeline working before they have a swatch
+// in hand.
+const PRESETS = [
+  { name: "Navy twill",     pattern: "twill",      color: "#1f2d4e", repeat: 10 },
+  { name: "Charcoal herringbone", pattern: "herringbone", color: "#3a3e46", repeat: 6 },
+  { name: "Glen plaid",     pattern: "glenplaid",  color: "#7a6e54", repeat: 4 },
+  { name: "Windowpane",     pattern: "windowpane", color: "#a39270", repeat: 3 },
+  { name: "Birdseye",       pattern: "birdseye",   color: "#2a3d5a", repeat: 20 },
+  { name: "Solid wool",     pattern: "solid",      color: "#5b3a2e", repeat: 1 },
+];
+
+function renderPresetGallery() {
+  ui.presets.innerHTML = "";
+  for (const p of PRESETS) {
+    const swatch = buildProceduralSwatch(p.pattern, p.color);
+    const btn = document.createElement("button");
+    btn.className = "preset-btn";
+    btn.title = p.name;
+    const img = document.createElement("img");
+    img.src = swatch.image.toDataURL();
+    img.alt = p.name;
+    const label = document.createElement("span");
+    label.className = "preset-label";
+    label.textContent = p.name;
+    btn.appendChild(img);
+    btn.appendChild(label);
+    btn.addEventListener("click", () => {
+      const src = swatch.image.toDataURL();
+      const freshImg = new Image();
+      freshImg.onload = () => {
+        loadSwatchFromImage(freshImg, src);
+        ui.repeatX.value = p.repeat; ui.repeatXNum.value = p.repeat;
+        ui.repeatY.value = p.repeat; ui.repeatYNum.value = p.repeat;
+        refreshSwatch();
+      };
+      freshImg.src = src;
+    });
+    ui.presets.appendChild(btn);
+  }
+}
+renderPresetGallery();
 
 // Garment picker
 ui.garmentPicker.addEventListener("click", e => {
@@ -167,36 +262,34 @@ ui.garmentPicker.addEventListener("click", e => {
   mountGarment(btn.dataset.garment);
 });
 
-// Reset + grid
 ui.resetCamera.addEventListener("click", () => {
-  camera.position.set(0, 1.4, 3.2);
-  controls.target.set(0, 1.1, 0);
+  camera.position.set(0, 1.5, 3.4);
+  controls.target.set(0, 1.25, 0);
 });
-let gridVisible = true;
+let gridVisible = false;
 ui.toggleGrid.addEventListener("click", () => {
   gridVisible = !gridVisible;
   setGridVisible(gridVisible);
+});
+
+ui.autoRotate.addEventListener("change", e => {
+  controls.autoRotate = e.target.checked;
 });
 
 // ---- Render loop ----------------------------------------------------------
 function animate() {
   requestAnimationFrame(animate);
   controls.update();
-  renderer.render(scene, camera);
+  composer.render();
 }
 animate();
 
-// ---- Tiny toast (bottom-center) ------------------------------------------
+// ---- Toast ----------------------------------------------------------------
 function toast(msg) {
   const el = document.createElement("div");
+  el.className = "toast";
   el.textContent = msg;
-  Object.assign(el.style, {
-    position: "fixed", bottom: "40px", left: "50%", transform: "translateX(-50%)",
-    background: "var(--surface)", border: "1px solid var(--gold)", color: "var(--gold)",
-    padding: "10px 16px", borderRadius: "10px", fontSize: "13px", fontWeight: "500",
-    zIndex: 9999, pointerEvents: "none", boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
-    animation: "fadeIn 0.25s ease",
-  });
   document.body.appendChild(el);
+  setTimeout(() => { el.style.opacity = "0"; el.style.transform = "translate(-50%, 8px)"; }, 2000);
   setTimeout(() => el.remove(), 2400);
 }

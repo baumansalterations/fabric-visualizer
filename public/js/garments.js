@@ -1,78 +1,119 @@
-// Garment meshes — both the placeholder primitive we use to prove out the
-// texture pipeline, and a loader that swaps in real glTF models when the
-// user drops them into public/assets/models/.
+// Garment meshes — a dress-form-style placeholder built from a lathed
+// profile curve plus carefully shaped arms, plus a glTF loader for when
+// real models land in /assets/models/.
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
-// A draped-cloth placeholder: the body of a torso with gently curved sides
-// so we can see how the swatch behaves on curvature. Built from a rounded
-// cylinder with UVs carefully ordered so pattern direction reads as
-// "up = head, across = around the body" — matching how real garments are
-// cut with the warp running vertically.
+// A lathed dress-form silhouette. Uses a profile of 2D points revolved
+// around the Y axis — gives a sculptural mannequin form that reads as
+// "menswear display" rather than "cylinder." UVs wrap naturally with
+// V along the vertical axis, so vertical-warp fabric patterns behave
+// correctly out of the box.
 export function buildPlaceholderGarment(material) {
   const group = new THREE.Group();
 
-  // Torso: rounded cylinder scaled to a vaguely-human silhouette. Vertical
-  // pattern direction works out of the box because CylinderGeometry's UVs
-  // already have V = along the cylinder axis.
-  const torsoGeo = new THREE.CylinderGeometry(
-    0.28,        // top radius (shoulder-ish)
-    0.32,        // bottom radius (waist-ish)
-    1.3,         // height
-    48,          // radial segments — enough for smooth pattern wrap
-    24,          // height segments
-    false
-  );
+  // Profile in (radius, height) pairs. Dense near shoulders + chest so the
+  // lathe reads as a real torso taper, not a lumpy cylinder.
+  const profile = [
+    [0.26, 0.00],   // base (hips)
+    [0.29, 0.10],
+    [0.31, 0.22],
+    [0.32, 0.35],   // widest (chest)
+    [0.315, 0.48],
+    [0.29, 0.62],
+    [0.26, 0.75],   // upper chest
+    [0.22, 0.85],   // shoulders narrow in
+    [0.14, 0.92],   // neck base
+    [0.10, 0.98],   // collar
+    [0.095, 1.02],
+    [0.095, 1.08],  // neck
+  ];
+  const profilePoints = profile.map(p => new THREE.Vector2(p[0], p[1]));
+  const torsoGeo = new THREE.LatheGeometry(profilePoints, 96);
   const torso = new THREE.Mesh(torsoGeo, material);
-  torso.position.y = 1.0;
+  torso.position.y = 0.7;
   torso.castShadow = true;
   torso.receiveShadow = true;
   group.add(torso);
 
-  // Neck/head stub — kept materially neutral so the swatch doesn't look
-  // weird on a head. Swaps for the mannequin model later.
-  const headMat = new THREE.MeshStandardMaterial({
-    color: 0x2a3a55, roughness: 0.8, metalness: 0,
+  // Head — neutral matte, not fabric. Slightly elongated for menswear
+  // mannequin proportions (head models used in retail display are typically
+  // featureless and a bit tall).
+  const headMat = new THREE.MeshPhysicalMaterial({
+    color: 0x1a2638,
+    roughness: 0.45,
+    metalness: 0.0,
+    clearcoat: 0.3,
+    clearcoatRoughness: 0.7,
   });
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 32, 32), headMat);
-  head.position.y = 1.85;
+  const headGeo = new THREE.SphereGeometry(0.13, 48, 48);
+  headGeo.scale(1, 1.25, 1);
+  const head = new THREE.Mesh(headGeo, headMat);
+  head.position.y = 0.7 + 1.08 + 0.12;
   head.castShadow = true;
   group.add(head);
 
-  // Shoulders — two stubby cylinders coming off the torso top so sleeves
-  // exist even before we load a real jacket. Get the swatch wrapping
-  // curved surfaces at multiple angles.
+  // Neck stub — matte finish between head and collar, sells the "dress form
+  // capped with head" look.
+  const neckStub = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.085, 0.095, 0.06, 24),
+    headMat,
+  );
+  neckStub.position.y = 0.7 + 1.08 + 0.03;
+  neckStub.castShadow = true;
+  group.add(neckStub);
+
+  // Arms — short sleeve stubs extending from the shoulder area. Curved out
+  // with a slight droop so they don't look robotic. Separate geometries so
+  // we can rotate/pose them later without disturbing the torso.
   for (const side of [-1, 1]) {
-    const sleeveGeo = new THREE.CylinderGeometry(0.09, 0.11, 0.55, 24, 12, false);
+    const sleeveProfile = [
+      [0.095, 0.00],
+      [0.095, 0.08],
+      [0.09, 0.22],
+      [0.085, 0.38],
+      [0.078, 0.52],
+    ];
+    const sleevePts = sleeveProfile.map(p => new THREE.Vector2(p[0], p[1]));
+    const sleeveGeo = new THREE.LatheGeometry(sleevePts, 40);
     const sleeve = new THREE.Mesh(sleeveGeo, material);
-    sleeve.position.set(side * 0.34, 1.45, 0);
-    sleeve.rotation.z = side * 0.3;
+    // Position at the shoulder seam and angle out + slightly forward/down.
+    sleeve.position.set(side * 0.22, 0.7 + 0.82, 0);
+    sleeve.rotation.z = side * (Math.PI / 2.6);
+    sleeve.rotation.x = 0.15;
     sleeve.castShadow = true;
+    sleeve.receiveShadow = true;
     group.add(sleeve);
   }
+
+  // Pedestal — matte black disc under the form so it doesn't look like it's
+  // floating. Only visible against the reflector floor, very small.
+  const pedestalGeo = new THREE.CylinderGeometry(0.3, 0.34, 0.04, 48);
+  const pedestalMat = new THREE.MeshPhysicalMaterial({
+    color: 0x0a0f1a, roughness: 0.25, metalness: 0.0, clearcoat: 0.6, clearcoatRoughness: 0.2,
+  });
+  const pedestal = new THREE.Mesh(pedestalGeo, pedestalMat);
+  pedestal.position.y = 0.72;
+  pedestal.castShadow = true;
+  pedestal.receiveShadow = true;
+  group.add(pedestal);
 
   return group;
 }
 
-// Attempt to load a real glTF garment from /assets/models/<name>.glb.
-// Returns null (without throwing) if the model doesn't exist yet so we can
-// fall back to the placeholder.
+// Load a real glTF garment from /assets/models/<name>.glb. Returns null if
+// the file isn't present yet so the caller can fall back to placeholder.
 const loader = new GLTFLoader();
 export function tryLoadModel(name, material) {
   return new Promise((resolve) => {
     const url = `./assets/models/${name}.glb`;
-    // Probe first with HEAD so a missing model fails fast without a noisy
-    // decoder error in the console.
     fetch(url, { method: "HEAD" }).then(r => {
       if (!r.ok) return resolve(null);
       loader.load(
         url,
         gltf => {
           const root = gltf.scene;
-          // Apply the shared material to every mesh so swatch changes reach
-          // the whole garment. If a model has multiple meshes we want them
-          // to share the same fabric.
           root.traverse(obj => {
             if (obj.isMesh) {
               obj.material = material;
