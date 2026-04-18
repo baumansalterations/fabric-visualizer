@@ -5,11 +5,28 @@ enable the matching button in the UI.
 
 Expected file names:
 
-| File           | Button   |
-|----------------|----------|
-| `trouser.glb`  | Trouser  |
-| `jacket.glb`   | Jacket   |
-| `suit.glb`     | Suit     |
+| File              | Slot                                     |
+|-------------------|------------------------------------------|
+| `mannequin.glb`   | Default base form (replaces dress form)  |
+| `trouser.glb`     | Trouser button                           |
+| `jacket.glb`      | Jacket button                            |
+| `suit.glb`        | Suit button                              |
+
+**`mannequin.glb` auto-loads on page open** if present, replacing the
+procedural dress-form placeholder. Multi-mesh humanoid models are handled —
+the loader applies the fabric material only to body / clothing meshes and
+leaves head, face, eyes, hair, hands, and feet in a neutral matte material.
+Mesh names are checked against keywords (`head`, `face`, `eye`, `brow`,
+`lash`, `hair`, `tooth`, `tongue`, `hand`, `finger`, `foot`, `toe`, `skin`,
+`nail`) so most off-the-shelf characters work without configuration.
+
+## Recommended free, commercial-use mannequin sources
+
+| Source | License | Notes |
+|---|---|---|
+| **Quaternius — Ultimate Modular Characters** | CC0 | https://quaternius.com/packs/ultimatemodularcharacters.html — direct glTF download, no account, fully free for commercial use. Pick a male character in T-pose, rename to `mannequin.glb`, drop in. |
+| **Sketchfab CC0 mannequins** | CC0 | https://sketchfab.com/3d-models/categories/people?features=downloadable&licenses=322a749bcfa841b29dff1e8a1bb74b0b — many tailor's dress forms and male mannequins. |
+| **Mixamo (Adobe)** | Free, account required | https://mixamo.com — pick X Bot, Y Bot, or Vincent. Downloads as FBX; convert to glTF at https://products.aspose.app/3d/conversion/fbx-to-gltf or in Blender. |
 
 ## Requirements
 

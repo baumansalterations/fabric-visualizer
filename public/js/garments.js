@@ -134,12 +134,25 @@ export function buildPlaceholderGarment(material) {
 }
 
 // --- glTF loader -------------------------------------------------------------
-// Drop-in for real garments. Falls back silently to null if the file is
-// missing so main.js can swap to the placeholder.
+// Drop-in for real garments AND for the base mannequin. Falls back silently
+// to null if the file is missing so main.js can swap to the procedural
+// placeholder.
+//
+// Heuristic for multi-mesh humanoid models (e.g. a Mixamo / Quaternius
+// character that has separate head + body + eyes + hands meshes): we only
+// apply the fabric material to meshes whose name suggests "body" or
+// "clothing." Anything that looks like a head, face, eye, hair, hand, or
+// foot keeps a neutral matte material so the swatch doesn't wrap a face.
+const NON_FABRIC_HINTS = ["head", "face", "eye", "brow", "lash", "hair", "tooth", "tongue", "hand", "finger", "foot", "toe", "skin", "nail"];
+
+function isNonFabricMesh(name) {
+  const n = (name || "").toLowerCase();
+  return NON_FABRIC_HINTS.some(h => n.includes(h));
+}
+
 const loader = new GLTFLoader();
-export function tryLoadModel(name, material) {
+function loadModel(url, fabricMaterial, mannequinMaterial) {
   return new Promise((resolve) => {
-    const url = `./assets/models/${name}.glb`;
     fetch(url, { method: "HEAD" }).then(r => {
       if (!r.ok) return resolve(null);
       loader.load(
@@ -148,7 +161,8 @@ export function tryLoadModel(name, material) {
           const root = gltf.scene;
           root.traverse(obj => {
             if (obj.isMesh) {
-              obj.material = material;
+              const useFabric = !isNonFabricMesh(obj.name);
+              obj.material = useFabric ? fabricMaterial : (mannequinMaterial || makeMannequinMaterial());
               obj.castShadow = true;
               obj.receiveShadow = true;
             }
@@ -160,4 +174,16 @@ export function tryLoadModel(name, material) {
       );
     }).catch(() => resolve(null));
   });
+}
+
+// Try to load a named garment glb (trouser / jacket / suit / etc.)
+export function tryLoadModel(name, fabricMaterial) {
+  return loadModel(`./assets/models/${name}.glb`, fabricMaterial, null);
+}
+
+// Try to load a base mannequin model. Used as the default form when present —
+// replaces the procedural dress-form placeholder. Drop a glTF into
+// public/assets/models/mannequin.glb and reload to enable.
+export function tryLoadMannequin(fabricMaterial) {
+  return loadModel("./assets/models/mannequin.glb", fabricMaterial, makeMannequinMaterial());
 }

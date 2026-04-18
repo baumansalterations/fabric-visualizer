@@ -8,7 +8,7 @@ import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js"
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
 import { createScene } from "./scene.js";
-import { buildPlaceholderGarment, tryLoadModel } from "./garments.js";
+import { buildPlaceholderGarment, tryLoadModel, tryLoadMannequin } from "./garments.js";
 import { applySwatchToMaterial, buildWeaveNormalMap, buildProceduralSwatch } from "./swatch.js";
 
 // ---- Renderer -------------------------------------------------------------
@@ -113,12 +113,21 @@ function mountGarment(name) {
     c.traverse?.(o => { if (o.isMesh && o.geometry) o.geometry.dispose?.(); });
   }
   if (name === "placeholder") {
-    GARMENT_ROOT.add(buildPlaceholderGarment(sharedMaterial));
+    // Prefer a real mannequin.glb if one's been dropped in; otherwise fall
+    // back to the procedural dress-form. Keeps the existing Phase-1
+    // experience working until the user sources a model.
+    tryLoadMannequin(sharedMaterial).then(obj => {
+      if (obj) GARMENT_ROOT.add(obj);
+      else GARMENT_ROOT.add(buildPlaceholderGarment(sharedMaterial));
+    });
   } else {
     tryLoadModel(name, sharedMaterial).then(obj => {
       if (obj) GARMENT_ROOT.add(obj);
       else {
-        GARMENT_ROOT.add(buildPlaceholderGarment(sharedMaterial));
+        // Fall back: real mannequin if present, else the procedural form
+        tryLoadMannequin(sharedMaterial).then(m => {
+          GARMENT_ROOT.add(m || buildPlaceholderGarment(sharedMaterial));
+        });
         toast(`No ${name}.glb yet — drop one into public/assets/models/`);
       }
     });
